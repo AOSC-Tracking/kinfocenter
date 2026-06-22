@@ -40,52 +40,11 @@ constexpr Output narrow(Input i)
     return o;
 }
 
-bool isNvidiaLoaded()
-{
-    static auto loaded = [] {
-        QFile file("/proc/modules");
-        if (!file.open(QIODevice::ReadOnly)) {
-            qWarning() << "Failed to open /proc/modules";
-            return false;
-        }
-
-        QTextStream in(&file);
-        QString line = in.readLine();
-        while (!line.isNull()) {
-            if (line.startsWith("nvidia"_L1)) {
-                return true;
-            }
-            line = in.readLine();
-        }
-
-        return false;
-    }();
-    return loaded;
-}
-
-// __NV_PRIME_RENDER_OFFLOAD is a bool, we therefore cannot address more than two devices!
-constexpr auto maximumNvidiaDrmIndex = 1; // max count is 2
-
-QJsonDocument readFromProcess(const QString &executable, int deviceIndex)
+QJsonDocument readFromProcess(const QString &executable)
 {
     QProcess process;
 
     auto processEnvironment = QProcessEnvironment::systemEnvironment();
-    if (deviceIndex > 0) {
-        if (isNvidiaLoaded()) {
-            // __NV_PRIME_RENDER_OFFLOAD is a bool, we therefore cannot address more than two devices!
-            const auto supportedIndex = deviceIndex <= maximumNvidiaDrmIndex;
-            Q_ASSERT(supportedIndex);
-            if (!supportedIndex) {
-                qWarning() << "Unsupported device index" << deviceIndex;
-                return {};
-            }
-            processEnvironment.insert(u"__NV_PRIME_RENDER_OFFLOAD"_s, QString::number(deviceIndex));
-            processEnvironment.insert(u"__GLX_VENDOR_LIBRARY_NAME"_s, u"nvidia"_s);
-        } else { // assume mesa
-            processEnvironment.insert("DRI_PRIME", QString::number(deviceIndex));
-        }
-    }
     process.setProcessEnvironment(processEnvironment);
 
     process.setProcessChannelMode(QProcess::ForwardedErrorChannel);
@@ -128,15 +87,14 @@ std::vector<GPUEntry::Device> vulkanDevices()
             {u"AMD Radeon RX 7900 XTX\nMesa 1.2.3 (RADV NAVI31)]"_s, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU},
             {u"AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)"_s, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU},
             {u"Intel(R) UHD Graphics (CML GT2)"_s, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU},
-            {u"llvmpipe (LLVM 18.1.6, 256 bits)"_s, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU},
-
+            {u"llvmpipe (LLVM 18.1.6, 256 bits)"_s, VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU},
         };
     }
 
     auto vulkanHelperExecutable = QStandardPaths::findExecutable("kinfocenter-vulkan-helper", searchPaths());
     qDebug() << "Looking at" << searchPaths() << vulkanHelperExecutable;
 
-    QJsonDocument document = readFromProcess(vulkanHelperExecutable, 0);
+    QJsonDocument document = readFromProcess(vulkanHelperExecutable);
     if (!document.isArray()) {
         qWarning() << "Failed to read GPU info from vulkan helper";
         return {};
@@ -227,37 +185,18 @@ std::optional<std::vector<GPUEntry::Device>> vulkanGPUs()
     return devices;
 }
 
-std::optional<std::vector<GPUEntry::Device>> openglGPUs()
+std::optional<std::vector<GPUEntry::Device>> eglGPUs()
 {
-    auto openglHelperExecutable = QStandardPaths::findExecutable("kinfocenter-opengl-helper", searchPaths());
-    qDebug() << "Looking at" << searchPaths() << openglHelperExecutable;
+    auto eglHelperExecutable = QStandardPaths::findExecutable("kinfocenter-egl-helper", searchPaths());
+    qDebug() << "Looking at" << searchPaths() << eglHelperExecutable;
 
-    QJsonArray array;
-    for (size_t i = 0; i < drmDeviceCount(); ++i) {
-        // __NV_PRIME_RENDER_OFFLOAD is a bool, we therefore cannot address more than two devices! Even this is practically wrong because
-        // __NV_PRIME_RENDER_OFFLOAD=0 doesn't necessarily pick the !nvidia gpu (see https://bugs.kde.org/show_bug.cgi?id=521295) so we may
-        // report the nvidia gpu twice because both offload states use the same gpu. This is a pre-existing issue so we are not addressing
-        // it in 6.7. In future versions the opengl hack is being replaced with egl device queries, solving this problem properly.
-        if (isNvidiaLoaded() && i > maximumNvidiaDrmIndex) {
-            array.append(QJsonObject{
-                {u"name"_s, i18nc("unknown GPU name", "Unknown")},
-                {u"vkDeviceType"_s, VK_PHYSICAL_DEVICE_TYPE_OTHER},
-            });
-            continue;
-        }
-
-        auto document = readFromProcess(openglHelperExecutable, i);
-        if (!document.isArray()) {
-            qWarning() << "Failed to read GPU info from opengl helper for device" << i;
-            return {};
-        }
-
-        const auto incomingArray = document.array();
-        for (const auto &device : incomingArray) {
-            array.append(device);
-        }
+    QJsonDocument document = readFromProcess(eglHelperExecutable);
+    if (!document.isArray()) {
+        qWarning() << "Failed to read GPU info from egl helper";
+        return {};
     }
 
+    const QJsonArray array = document.array();
     std::vector<GPUEntry::Device> devices;
     devices.reserve(array.size());
     for (const auto &device : array) {
@@ -271,7 +210,7 @@ std::optional<std::vector<GPUEntry::Device>> openglGPUs()
     }
 
     if (!devicesAddUpAfterStripping(devices, true)) {
-        qWarning() << "GPU count mismatch (from opengl)" << devices.size() << drmDeviceCount();
+        qWarning() << "GPU count mismatch (from egl)" << devices.size() << drmDeviceCount();
         return {};
     }
 
@@ -289,7 +228,7 @@ std::optional<std::vector<GPUEntry::Device>> gpus()
         return optionalGpus;
     }
 
-    if (auto optionalGpus = openglGPUs(); optionalGpus.has_value() && !optionalGpus->empty()) {
+    if (auto optionalGpus = eglGPUs(); optionalGpus.has_value() && !optionalGpus->empty()) {
         return optionalGpus;
     }
 
