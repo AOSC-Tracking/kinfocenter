@@ -140,12 +140,16 @@ KCMUtils.SimpleKCM {
                     Kirigami.ContextualHelpButton {
                         visible: toolTipText.length > 0
                         toolTipText: entry.localizedHelp()
+                        // A ToolButton is about twice as tall as a line of text in
+                        // Breeze, which would make this row taller than plain text
+                        // rows. Match the text height instead.
+                        implicitHeight: valueLabel.implicitHeight
+                        implicitWidth: implicitHeight
                     }
 
-                    QQC2.Button {
+                    Kirigami.LinkButton {
                         visible: hidden
                         property var dialog: null
-                        icon.name: "view-visible-symbolic"
                         text: i18nc("@action:button show a hidden entry in an overlay", "Show")
                         onClicked: {
                             if (!dialog) {
